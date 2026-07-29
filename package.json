@@ -36,13 +36,17 @@
     "dist",
     "examples",
     "docs",
-    "README.md"
+    "README.md",
+    "hasna.contract.json"
   ],
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/cli/index.ts --outdir dist --target bun && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "tsc --noEmit",
+    "contract-check": "bunx @hasna/contracts check",
+    "artifact-scan": "bunx @hasna/contracts artifact-scan",
+    "prepack": "bun run artifact-scan",
     "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "open-guardrails",
+  "package": "@hasna/guardrails",
+  "kind": "library",
+  "storage": {
+    "waived": true,
+    "reason": "This package evaluates guardrail policies in memory and does not own or persist application data."
+  }
+}
