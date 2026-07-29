@@ -431,17 +431,17 @@ export function evaluateGuardrail(
   const input = parseGuardrailInput(inputValue);
   const policySet = parseGuardrailPolicySet(policySetValue);
   const initialMatches = policySet.policies.map((policy) => matchPolicy(input, policy));
-  const redactionsByPolicy = new Map(
-    initialMatches
-      .filter((match) => match.matched)
-      .map((match) => [match.policy.id, detectRedactions(input, match.policy.id, match.policy.redactions ?? [])]),
-  );
-  const matches = initialMatches.map((match) => ({
-    ...match,
-    effective:
-      match.matched &&
-      (match.policy.effect !== "redact" || (redactionsByPolicy.get(match.policy.id)?.length ?? 0) > 0),
-  }));
+  // Redactions belong to the rule at this position, never to its id: a policy set
+  // may repeat an id, and keying by it would let one rule's result overwrite
+  // another's and silently drop a redaction that actually fired.
+  const matches = initialMatches.map((match) => {
+    const redactions = match.matched ? detectRedactions(input, match.policy.id, match.policy.redactions ?? []) : [];
+    return {
+      ...match,
+      redactions,
+      effective: match.matched && (match.policy.effect !== "redact" || redactions.length > 0),
+    };
+  });
   const rankedMatches = matches.filter((match) => match.effective).sort(comparePolicyMatches);
   const winner = rankedMatches[0];
   const effectivePolicies = rankedMatches.map((match) => match.policy);
@@ -453,7 +453,7 @@ export function evaluateGuardrail(
   const decisionId = options.decisionId ?? randomUUID();
   const labels = Array.from(new Set([...(input.tags ?? []), ...effectivePolicies.map((policy) => policy.id)])).sort(compareStrings);
   const selectedRule = winner ? matchedPolicy(winner.policy) : null;
-  const redactions = rankedMatches.flatMap((match) => redactionsByPolicy.get(match.policy.id) ?? []);
+  const redactions = rankedMatches.flatMap((match) => match.redactions);
 
   return {
     status,

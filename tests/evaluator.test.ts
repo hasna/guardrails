@@ -192,6 +192,36 @@ describe("evaluateGuardrail", () => {
     });
   });
 
+  test("evaluates rules that share a policy id independently", () => {
+    const hitting: GuardrailPolicySet["policies"][number] = {
+      id: "duplicate-id",
+      effect: "redact",
+      reason: "the secret is present",
+      redactions: [{ pattern: "SECRETVALUE" }],
+    };
+    const ineffective: GuardrailPolicySet["policies"][number] = {
+      id: "duplicate-id",
+      effect: "redact",
+      reason: "nothing to redact",
+      redactions: [{ pattern: "NEVERAPPEARS" }],
+    };
+    const input: GuardrailInput = { operationType: "prompt", prompt: { text: "here is SECRETVALUE" } };
+
+    const hitFirst = evaluateGuardrail(input, { id: "duplicate-ids", policies: [hitting, ineffective] });
+    const hitLast = evaluateGuardrail(input, { id: "duplicate-ids", policies: [ineffective, hitting] });
+
+    // The set schema permits a repeated id, so rules are tracked positionally.
+    // Neither ordering may let the empty rule erase the finding of the rule that
+    // fired, nor duplicate that finding onto the rule that did not.
+    for (const decision of [hitFirst, hitLast]) {
+      expect(decision.status).toBe("redact");
+      expect(decision.allowed).toBe(true);
+      expect(decision.redactions).toHaveLength(1);
+      expect(decision.redactions[0]?.path).toBe("prompt.text");
+      expect(JSON.stringify(decision)).not.toContain("SECRETVALUE");
+    }
+  });
+
   test("repeats the decision but not the audit identity when metadata is not supplied", () => {
     const input: GuardrailInput = { operationType: "prompt", prompt: { text: "hello" } };
     const policySet: GuardrailPolicySet = {
