@@ -9,6 +9,191 @@ import {
 import type { GuardrailInput, GuardrailPolicySet } from "../src";
 
 describe("evaluateGuardrail", () => {
+  test("applies deny > approval > redact > warn > allow precedence", () => {
+    const policies: GuardrailPolicySet["policies"] = [
+      {
+        id: "deny-rule",
+        effect: "deny",
+        reason: "deny won",
+      },
+      {
+        id: "approval-rule",
+        effect: "approval_required",
+        reason: "approval won",
+        when: { operationTypes: ["prompt"] },
+      },
+      {
+        id: "redact-rule",
+        effect: "redact",
+        reason: "redact won",
+        when: { operationTypes: ["prompt"], textIncludes: ["TOKEN"] },
+        redactions: [{ id: "token", pattern: "TOKEN" }],
+      },
+      {
+        id: "warn-rule",
+        effect: "warn",
+        reason: "warn won",
+        when: {
+          operationTypes: ["prompt"],
+          textIncludes: ["TOKEN"],
+          actorRolesAny: ["operator"],
+        },
+      },
+      {
+        id: "allow-rule",
+        effect: "allow",
+        reason: "allow won",
+        when: {
+          operationTypes: ["prompt"],
+          textIncludes: ["TOKEN"],
+          actorRolesAny: ["operator"],
+          tagsAny: ["specific"],
+        },
+      },
+    ];
+    const input: GuardrailInput = {
+      operationType: "prompt",
+      prompt: { text: "TOKEN" },
+      actor: { roles: ["operator"] },
+      tags: ["specific"],
+    };
+    const expected = ["deny", "approval_required", "redact", "warn", "allow"] as const;
+
+    for (const [index, status] of expected.entries()) {
+      const decision = evaluateGuardrail(input, {
+        id: `precedence-${status}`,
+        policies: policies.slice(index),
+      });
+
+      expect(decision.status).toBe(status);
+      expect(decision.matchedRule?.effect).toBe(status);
+      expect(decision.matchedPolicies[0]).toEqual(decision.matchedRule);
+      expect(decision.rationaleTrace.find((entry) => entry.selected)?.policyId).toBe(decision.matchedRule?.id);
+    }
+  });
+
+  test("selects the most-specific rule independently of policy order", () => {
+    const broad: GuardrailPolicySet["policies"][number] = {
+      id: "a-broad-warning",
+      effect: "warn",
+      reason: "broad",
+      when: {
+        operationTypes: ["prompt", "action"],
+        textIncludes: ["deploy", "release"],
+      },
+    };
+    const narrow: GuardrailPolicySet["policies"][number] = {
+      id: "z-narrow-warning",
+      effect: "warn",
+      reason: "narrow",
+      when: {
+        operationTypes: ["prompt"],
+        textIncludes: ["deploy"],
+      },
+    };
+    const input: GuardrailInput = { operationType: "prompt", prompt: { text: "deploy now" } };
+    const first = evaluateGuardrail(input, {
+      id: "specificity-forward",
+      policies: [broad, narrow],
+    });
+    const reversed = evaluateGuardrail(input, {
+      id: "specificity-reversed",
+      policies: [narrow, broad],
+    });
+
+    expect(first.matchedRule?.id).toBe("z-narrow-warning");
+    expect(reversed.matchedRule?.id).toBe("z-narrow-warning");
+    expect(first.rationaleTrace.find((entry) => entry.policyId === broad.id)?.rationale).toContain("fewer alternatives");
+  });
+
+  test("uses policy id as the deterministic final tie-break", () => {
+    const policy = (id: string): GuardrailPolicySet["policies"][number] => ({
+      id,
+      effect: "warn",
+      reason: id,
+      when: { operationTypes: ["prompt"] },
+    });
+    const input: GuardrailInput = { operationType: "prompt", prompt: { text: "hello" } };
+
+    const forward = evaluateGuardrail(input, { id: "tie-forward", policies: [policy("z-rule"), policy("a-rule")] });
+    const reversed = evaluateGuardrail(input, { id: "tie-reversed", policies: [policy("a-rule"), policy("z-rule")] });
+
+    expect(forward.matchedRule?.id).toBe("a-rule");
+    expect(reversed.matchedRule?.id).toBe("a-rule");
+  });
+
+  test("returns an explainable trace for selected, unmatched, disabled, and ineffective rules", () => {
+    const decision = evaluateGuardrail(
+      { operationType: "prompt", prompt: { text: "hello" } },
+      {
+        id: "trace",
+        policies: [
+          { id: "selected", effect: "warn", reason: "selected", when: { operationTypes: ["prompt"] } },
+          { id: "unmatched", effect: "deny", reason: "unmatched", when: { operationTypes: ["shell_command"] } },
+          { id: "disabled", enabled: false, effect: "deny", reason: "disabled" },
+          {
+            id: "ineffective-redaction",
+            effect: "redact",
+            reason: "no finding",
+            redactions: [{ pattern: "TOKEN" }],
+          },
+        ],
+      },
+    );
+
+    expect(decision.matchedRule?.id).toBe("selected");
+    expect(decision.rationaleTrace.find((entry) => entry.policyId === "selected")).toMatchObject({
+      matched: true,
+      effective: true,
+      selected: true,
+      constraints: ["when.operationTypes"],
+    });
+    expect(decision.rationaleTrace.find((entry) => entry.policyId === "unmatched")?.failedConstraints).toEqual([
+      "when.operationTypes",
+    ]);
+    expect(decision.rationaleTrace.find((entry) => entry.policyId === "disabled")?.rationale).toBe("Rule is disabled.");
+    expect(decision.rationaleTrace.find((entry) => entry.policyId === "ineffective-redaction")).toMatchObject({
+      matched: true,
+      effective: false,
+      selected: false,
+    });
+  });
+
+  test("is deterministic when audit metadata is not supplied", () => {
+    const input: GuardrailInput = { operationType: "prompt", prompt: { text: "hello" } };
+    const policySet: GuardrailPolicySet = {
+      id: "deterministic",
+      policies: [{ id: "warn", effect: "warn", reason: "warning" }],
+    };
+    const inputBefore = JSON.stringify(input);
+    const policyBefore = JSON.stringify(policySet);
+
+    const first = evaluateGuardrail(input, policySet);
+    const second = evaluateGuardrail(input, policySet);
+
+    expect(second).toEqual(first);
+    expect(first.audit.decisionId).toMatch(/^decision-[a-f0-9]{32}$/);
+    expect(first.audit.evaluatedAt).toBeUndefined();
+    expect(JSON.stringify(input)).toBe(inputBefore);
+    expect(JSON.stringify(policySet)).toBe(policyBefore);
+  });
+
+  test("uses the default decision only when no rule matches", () => {
+    const decision = evaluateGuardrail(
+      { operationType: "prompt", prompt: { text: "hello" } },
+      {
+        id: "default-deny",
+        defaultDecision: "deny",
+        policies: [
+          { id: "explicit-allow", effect: "allow", reason: "explicit allow", when: { operationTypes: ["prompt"] } },
+        ],
+      },
+    );
+
+    expect(decision.status).toBe("allow");
+    expect(decision.matchedRule?.id).toBe("explicit-allow");
+  });
+
   test("redacts secret-looking prompt content without exposing the raw secret", () => {
     const decision = evaluateGuardrail(
       {

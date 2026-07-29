@@ -58,10 +58,17 @@ const decision = evaluateGuardrail(input, defaultGuardrailPolicySet);
 Every decision includes:
 
 - `status`: `allow`, `deny`, `warn`, `redact`, or `approval_required`.
-- `reason` and `matchedPolicies`.
+- `reason`, the selected `matchedRule`, and all effective `matchedPolicies`.
+- `rationaleTrace`, including each rule's match result, specificity, failed
+  matcher groups, and selection rationale.
 - `evidence`, `obligations`, `redactions`, and `approvalRequirements`.
-- `audit` metadata with decision id, evaluated time, policy set, operation type,
-  actor, trace id, and labels.
+- `audit` metadata with a deterministic decision id, policy set, operation
+  type, actor, trace id, and labels. Pass `options.now` to include an evaluated
+  time.
+
+Matched rules are ranked by effect (`deny` > `approval_required` > `redact` >
+`warn` > `allow`), then by the number and breadth of matcher constraints.
+Policy id is the final deterministic tie-break.
 
 ## Examples
 
