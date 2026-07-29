@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { defaultGuardrailPolicySet } from "./default-policy";
 import { collectSearchText, detectRedactions, sha256 } from "./redaction";
 import { parseGuardrailInput, parseGuardrailPolicySet } from "./schemas";
@@ -446,9 +447,10 @@ export function evaluateGuardrail(
   const effectivePolicies = rankedMatches.map((match) => match.policy);
   const status = winner?.policy.effect ?? policySet.defaultDecision ?? "allow";
   const reason = winner?.policy.reason ?? defaultReason(status);
-  const decisionId =
-    options.decisionId ??
-    `decision-${sha256(stableSerialize({ input, policySet, engineVersion: options.engineVersion ?? guardrailsVersion })).slice(0, 32)}`;
+  const engineVersion = options.engineVersion ?? guardrailsVersion;
+  const evaluatedAt = options.now ?? new Date();
+  const decisionFingerprint = sha256(stableSerialize({ input, policySet, engineVersion })).slice(0, 32);
+  const decisionId = options.decisionId ?? randomUUID();
   const labels = Array.from(new Set([...(input.tags ?? []), ...effectivePolicies.map((policy) => policy.id)])).sort(compareStrings);
   const selectedRule = winner ? matchedPolicy(winner.policy) : null;
   const redactions = rankedMatches.flatMap((match) => redactionsByPolicy.get(match.policy.id) ?? []);
@@ -470,8 +472,9 @@ export function evaluateGuardrail(
     }),
     audit: {
       decisionId,
-      ...(options.now ? { evaluatedAt: options.now.toISOString() } : {}),
-      engineVersion: options.engineVersion ?? guardrailsVersion,
+      decisionFingerprint,
+      evaluatedAt: evaluatedAt.toISOString(),
+      engineVersion,
       policySetId: policySet.id,
       ...(policySet.version ? { policySetVersion: policySet.version } : {}),
       ...(input.id ? { inputId: input.id } : {}),

@@ -344,8 +344,14 @@ export type GuardrailRedaction = {
 };
 
 export type GuardrailAuditMetadata = {
+  /** Unique per evaluation, so two identical requests remain separate audit events. */
   decisionId: string;
-  evaluatedAt?: string;
+  /**
+   * Content hash of the input, policy set, and engine version. Two evaluations of the
+   * same request share a fingerprint even though their decision ids differ.
+   */
+  decisionFingerprint: string;
+  evaluatedAt: string;
   engineVersion: string;
   policySetId: string;
   policySetVersion?: string;

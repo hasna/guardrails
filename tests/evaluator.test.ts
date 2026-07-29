@@ -67,7 +67,7 @@ describe("evaluateGuardrail", () => {
 
       expect(decision.status).toBe(status);
       expect(decision.matchedRule?.effect).toBe(status);
-      expect(decision.matchedPolicies[0]).toEqual(decision.matchedRule);
+      expect(decision.matchedRule).toEqual(decision.matchedPolicies[0] ?? null);
       expect(decision.rationaleTrace.find((entry) => entry.selected)?.policyId).toBe(decision.matchedRule?.id);
     }
   });
@@ -104,6 +104,39 @@ describe("evaluateGuardrail", () => {
     expect(first.matchedRule?.id).toBe("z-narrow-warning");
     expect(reversed.matchedRule?.id).toBe("z-narrow-warning");
     expect(first.rationaleTrace.find((entry) => entry.policyId === broad.id)?.rationale).toContain("fewer alternatives");
+  });
+
+  test("ranks by constraint count when both rules offer the same number of alternatives", () => {
+    // Both matchers total two alternatives, so the alternatives tie-break cannot
+    // decide this pair; only the constraint count can. The broad rule also sorts
+    // first by id, so the id tie-break would pick the wrong rule.
+    const broad: GuardrailPolicySet["policies"][number] = {
+      id: "a-broad-two-operations",
+      effect: "warn",
+      reason: "broad",
+      when: { operationTypes: ["prompt", "action"] },
+    };
+    const narrow: GuardrailPolicySet["policies"][number] = {
+      id: "z-narrow-tagged-prompt",
+      effect: "warn",
+      reason: "narrow",
+      when: { operationTypes: ["prompt"], tagsAny: ["release"] },
+    };
+    const input: GuardrailInput = {
+      operationType: "prompt",
+      tags: ["release"],
+      prompt: { text: "ship it" },
+    };
+    const forward = evaluateGuardrail(input, { id: "constraints-forward", policies: [broad, narrow] });
+    const reversed = evaluateGuardrail(input, { id: "constraints-reversed", policies: [narrow, broad] });
+
+    expect(forward.matchedRule?.id).toBe("z-narrow-tagged-prompt");
+    expect(reversed.matchedRule?.id).toBe("z-narrow-tagged-prompt");
+    expect(forward.rationaleTrace.find((entry) => entry.policyId === narrow.id)?.specificity).toBe(2);
+    expect(forward.rationaleTrace.find((entry) => entry.policyId === broad.id)?.specificity).toBe(1);
+    expect(forward.rationaleTrace.find((entry) => entry.policyId === broad.id)?.rationale).toContain(
+      "won with 2 constraints versus 1",
+    );
   });
 
   test("uses policy id as the deterministic final tie-break", () => {
@@ -159,7 +192,7 @@ describe("evaluateGuardrail", () => {
     });
   });
 
-  test("is deterministic when audit metadata is not supplied", () => {
+  test("repeats the decision but not the audit identity when metadata is not supplied", () => {
     const input: GuardrailInput = { operationType: "prompt", prompt: { text: "hello" } };
     const policySet: GuardrailPolicySet = {
       id: "deterministic",
@@ -171,11 +204,32 @@ describe("evaluateGuardrail", () => {
     const first = evaluateGuardrail(input, policySet);
     const second = evaluateGuardrail(input, policySet);
 
-    expect(second).toEqual(first);
-    expect(first.audit.decisionId).toMatch(/^decision-[a-f0-9]{32}$/);
-    expect(first.audit.evaluatedAt).toBeUndefined();
+    const { audit: firstAudit, ...firstDecision } = first;
+    const { audit: secondAudit, ...secondDecision } = second;
+    expect(secondDecision).toEqual(firstDecision);
+
+    // The fingerprint is the deterministic part; the decision id and timestamp
+    // identify the individual audit event and must not be shared between them.
+    expect(secondAudit.decisionFingerprint).toBe(firstAudit.decisionFingerprint);
+    expect(firstAudit.decisionFingerprint).toMatch(/^[a-f0-9]{32}$/);
+    expect(secondAudit.decisionId).not.toBe(firstAudit.decisionId);
+    expect(firstAudit.evaluatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+
     expect(JSON.stringify(input)).toBe(inputBefore);
     expect(JSON.stringify(policySet)).toBe(policyBefore);
+  });
+
+  test("stamps every default evaluation with an evaluated time and a unique decision id", () => {
+    const input: GuardrailInput = { operationType: "prompt", prompt: { text: "hello" } };
+    const before = Date.now();
+    const decision = evaluateGuardrail(input);
+    const after = Date.now();
+
+    const evaluatedAt = Date.parse(decision.audit.evaluatedAt);
+    expect(Number.isNaN(evaluatedAt)).toBe(false);
+    expect(evaluatedAt).toBeGreaterThanOrEqual(before);
+    expect(evaluatedAt).toBeLessThanOrEqual(after);
+    expect(decision.audit.decisionId).not.toBe(evaluateGuardrail(input).audit.decisionId);
   });
 
   test("uses the default decision only when no rule matches", () => {
@@ -192,6 +246,31 @@ describe("evaluateGuardrail", () => {
 
     expect(decision.status).toBe("allow");
     expect(decision.matchedRule?.id).toBe("explicit-allow");
+  });
+
+  test("falls back to the default decision, and lets any matching rule override it", () => {
+    const policySet: GuardrailPolicySet = {
+      id: "default-deny-with-advisory-rule",
+      defaultDecision: "deny",
+      policies: [
+        { id: "advisory-warning", effect: "warn", reason: "advisory", when: { operationTypes: ["prompt"] } },
+      ],
+    };
+
+    const unmatched = evaluateGuardrail({ operationType: "shell_command", shell: { command: "ls" } }, policySet);
+    const matched = evaluateGuardrail({ operationType: "prompt", prompt: { text: "delete prod" } }, policySet);
+
+    // Nothing matches: the default decision applies.
+    expect(unmatched.status).toBe("deny");
+    expect(unmatched.allowed).toBe(false);
+    expect(unmatched.matchedRule).toBeNull();
+
+    // A rule matches: it wins outright, even though `warn` is weaker than the
+    // default. `defaultDecision` is a fallback, not a decision floor — a
+    // deny-by-default set must express its floor as a rule, not as a default.
+    expect(matched.status).toBe("warn");
+    expect(matched.allowed).toBe(true);
+    expect(matched.matchedRule?.id).toBe("advisory-warning");
   });
 
   test("redacts secret-looking prompt content without exposing the raw secret", () => {
