@@ -1,15 +1,13 @@
-name: CI
+name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   verify:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -17,16 +15,25 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
-      # The same three steps prepublishOnly runs, so a branch that would break
-      # `npm publish` breaks the pull request instead.
-      - name: Type check
+      - name: typecheck
         run: bun run typecheck
 
-      - name: Run tests
+      - name: test
         run: bun test
 
-      - name: Build
+      - name: build
         run: bun run build
+
+      # The two gates this repo had no automation for: an invalid
+      # hasna.contract.json and a prepack that bricks packing both reached a
+      # green PR because nothing ran them.
+      - name: contract conformance
+        run: bunx @hasna/contracts@0.8.5 repo-conformance .
+
+      - name: pack the release artifact
+        run: bun pm pack --dry-run
+
+      - name: scan the packed artifact
+        run: bun run scan:artifact

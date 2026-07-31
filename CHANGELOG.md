@@ -30,8 +30,20 @@ All notable changes to `@hasna/guardrails` are documented in this file.
 - Deterministic rule ranking — effect precedence, then the number of matcher
   constraints, then the number of alternatives, then policy id — so the
   selected rule no longer depends on declaration order.
-- CI workflow running the same typecheck, test, and build steps as
+- `hasna.contract.json` declaring the repo against `hasna.service_contract.v1`
+  (library class, SDK and CLI surfaces, API/MCP waived, no store).
+- `scan:artifact` release gate — packs the tarball and runs the pinned
+  `@hasna/contracts` artifact scan against it — wired into `prepack` and
   `prepublishOnly`.
+- CI workflow running typecheck, tests, build, `repo-conformance`, `bun pm pack`
+  and the artifact scan — the same gates `prepublishOnly` runs, so a branch that
+  would break `npm publish` breaks the pull request instead.
+
+### Removed
+
+- The `open-guardrails` bin alias. The repo was renamed to `guardrails`, and the
+  service contract allowlists `<name>` plus its documented suffixes only. Use
+  the `guardrails` bin.
 
 ## 0.1.0 — 2026-07-24
 
